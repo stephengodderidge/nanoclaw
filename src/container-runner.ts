@@ -127,6 +127,16 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Mount skills from container/skills/ — available to all groups via skillDirectories
+  const skillsSrc = path.join(projectRoot, 'container', 'skills');
+  if (fs.existsSync(skillsSrc)) {
+    mounts.push({
+      hostPath: skillsSrc,
+      containerPath: '/workspace/skills',
+      readonly: true,
+    });
+  }
+
   // Mount agent-runner source from host — recompiled on container startup.
   // Bypasses sticky build cache for code changes.
   const agentRunnerSrc = path.join(projectRoot, 'container', 'agent-runner', 'src');

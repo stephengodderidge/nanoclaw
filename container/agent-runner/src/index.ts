@@ -226,6 +226,7 @@ async function runQuery(
     model: 'claude-opus-4.6',
     workingDirectory: '/workspace/group',
     configDir: '/workspace/copilot-config',
+    skillDirectories: ['/workspace/skills'],
     systemMessage: globalClaudeMd
       ? { mode: 'append' as const, content: globalClaudeMd }
       : undefined,
