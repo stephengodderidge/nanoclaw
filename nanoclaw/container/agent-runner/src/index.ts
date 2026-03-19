@@ -1,22 +1,22 @@
 /**
- * NanoClaw Agent Runner
+ * NanoClaw Agent Runner (GitHub Copilot SDK)
  * Runs inside a container, receives config via stdin, outputs result to stdout
  *
  * Input protocol:
- *   Stdin: Full ContainerInput JSON (read until EOF, like before)
+ *   Stdin: Full ContainerInput JSON (read until EOF)
  *   IPC:   Follow-up messages written as JSON files to /workspace/ipc/input/
  *          Files: {type:"message", text:"..."}.json — polled and consumed
  *          Sentinel: /workspace/ipc/input/_close — signals session end
  *
  * Stdout protocol:
  *   Each result is wrapped in OUTPUT_START_MARKER / OUTPUT_END_MARKER pairs.
- *   Multiple results may be emitted (one per agent teams result).
  *   Final marker after loop ends signals completion.
  */
 
 import fs from 'fs';
 import path from 'path';
-import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
+import { CopilotClient, approveAll } from '@github/copilot-sdk';
+import type { CopilotSession } from '@github/copilot-sdk';
 import { fileURLToPath } from 'url';
 
 interface ContainerInput {
@@ -47,52 +47,10 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
-interface SDKUserMessage {
-  type: 'user';
-  message: { role: 'user'; content: string };
-  parent_tool_use_id: null;
-  session_id: string;
-}
-
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
-
-/**
- * Push-based async iterable for streaming user messages to the SDK.
- * Keeps the iterable alive until end() is called, preventing isSingleUserTurn.
- */
-class MessageStream {
-  private queue: SDKUserMessage[] = [];
-  private waiting: (() => void) | null = null;
-  private done = false;
-
-  push(text: string): void {
-    this.queue.push({
-      type: 'user',
-      message: { role: 'user', content: text },
-      parent_tool_use_id: null,
-      session_id: '',
-    });
-    this.waiting?.();
-  }
-
-  end(): void {
-    this.done = true;
-    this.waiting?.();
-  }
-
-  async *[Symbol.asyncIterator](): AsyncGenerator<SDKUserMessage> {
-    while (true) {
-      while (this.queue.length > 0) {
-        yield this.queue.shift()!;
-      }
-      if (this.done) return;
-      await new Promise<void>(r => { this.waiting = r; });
-      this.waiting = null;
-    }
-  }
-}
+const DEFAULT_MODEL = process.env.MODEL || 'claude-opus-4.6';
 
 async function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -140,48 +98,46 @@ function getSessionSummary(sessionId: string, transcriptPath: string): string | 
 }
 
 /**
- * Archive the full transcript to conversations/ before compaction.
+ * Archive the conversation to conversations/ on compaction.
+ * Called when the Copilot SDK fires session.compaction_start.
+ * Uses session.getMessages() instead of Claude SDK's transcript file.
  */
-function createPreCompactHook(assistantName?: string): HookCallback {
-  return async (input, _toolUseId, _context) => {
-    const preCompact = input as PreCompactHookInput;
-    const transcriptPath = preCompact.transcript_path;
-    const sessionId = preCompact.session_id;
+function archiveConversation(session: CopilotSession, containerInput: ContainerInput): void {
+  try {
+    const events = session.getMessages();
+    const messages: ParsedMessage[] = [];
 
-    if (!transcriptPath || !fs.existsSync(transcriptPath)) {
-      log('No transcript found for archiving');
-      return {};
-    }
-
-    try {
-      const content = fs.readFileSync(transcriptPath, 'utf-8');
-      const messages = parseTranscript(content);
-
-      if (messages.length === 0) {
-        log('No messages to archive');
-        return {};
+    for (const event of events) {
+      if (event.type === 'user.message' && event.data?.content) {
+        messages.push({ role: 'user', content: String(event.data.content) });
+      } else if (event.type === 'assistant.message' && event.data?.content) {
+        messages.push({ role: 'assistant', content: String(event.data.content) });
       }
-
-      const summary = getSessionSummary(sessionId, transcriptPath);
-      const name = summary ? sanitizeFilename(summary) : generateFallbackName();
-
-      const conversationsDir = '/workspace/group/conversations';
-      fs.mkdirSync(conversationsDir, { recursive: true });
-
-      const date = new Date().toISOString().split('T')[0];
-      const filename = `${date}-${name}.md`;
-      const filePath = path.join(conversationsDir, filename);
-
-      const markdown = formatTranscriptMarkdown(messages, summary, assistantName);
-      fs.writeFileSync(filePath, markdown);
-
-      log(`Archived conversation to ${filePath}`);
-    } catch (err) {
-      log(`Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    return {};
-  };
+    if (messages.length === 0) {
+      log('No messages to archive');
+      return;
+    }
+
+    const sessionId = (session as any).sessionId || 'unknown';
+    const summary = getSessionSummary(sessionId, '/workspace/group');
+    const name = summary ? sanitizeFilename(summary) : generateFallbackName();
+
+    const conversationsDir = '/workspace/group/conversations';
+    fs.mkdirSync(conversationsDir, { recursive: true });
+
+    const date = new Date().toISOString().split('T')[0];
+    const filename = `${date}-${name}.md`;
+    const filePath = path.join(conversationsDir, filename);
+
+    const markdown = formatTranscriptMarkdown(messages, summary, containerInput.assistantName);
+    fs.writeFileSync(filePath, markdown);
+
+    log(`Archived conversation to ${filePath}`);
+  } catch (err) {
+    log(`Failed to archive conversation: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 function sanitizeFilename(summary: string): string {
@@ -324,144 +280,116 @@ function waitForIpcMessage(): Promise<string | null> {
 }
 
 /**
- * Run a single query and stream results via writeOutput.
- * Uses MessageStream (AsyncIterable) to keep isSingleUserTurn=false,
- * allowing agent teams subagents to run to completion.
- * Also pipes IPC messages into the stream during the query.
+ * Build the system message from global CLAUDE.md and extra directory CLAUDE.md files.
+ * For non-main groups, the global CLAUDE.md is appended to the default system prompt.
+ * Extra directories' CLAUDE.md files are also included.
  */
-async function runQuery(
-  prompt: string,
-  sessionId: string | undefined,
-  mcpServerPath: string,
-  containerInput: ContainerInput,
-  sdkEnv: Record<string, string | undefined>,
-  resumeAt?: string,
-): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
-  const stream = new MessageStream();
-  stream.push(prompt);
+function buildSystemMessage(containerInput: ContainerInput): { content: string; mode: 'append' } | undefined {
+  const parts: string[] = [];
 
-  // Poll IPC for follow-up messages and _close sentinel during the query
-  let ipcPolling = true;
-  let closedDuringQuery = false;
-  const pollIpcDuringQuery = () => {
-    if (!ipcPolling) return;
+  // Global CLAUDE.md (shared across all groups, read-only for non-main)
+  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
+  if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
+    parts.push(fs.readFileSync(globalClaudeMdPath, 'utf-8'));
+  }
+
+  // Extra directories' CLAUDE.md files
+  const extraBase = '/workspace/extra';
+  if (fs.existsSync(extraBase)) {
+    for (const entry of fs.readdirSync(extraBase)) {
+      const claudeMdPath = path.join(extraBase, entry, 'CLAUDE.md');
+      if (fs.existsSync(claudeMdPath)) {
+        parts.push(fs.readFileSync(claudeMdPath, 'utf-8'));
+      }
+    }
+  }
+
+  if (parts.length === 0) return undefined;
+  return { content: parts.join('\n\n---\n\n'), mode: 'append' as const };
+}
+
+/**
+ * Create or resume a Copilot SDK session.
+ */
+async function createOrResumeSession(
+  client: CopilotClient,
+  containerInput: ContainerInput,
+  mcpServerPath: string,
+): Promise<CopilotSession> {
+  const systemMessage = buildSystemMessage(containerInput);
+
+  const sessionConfig = {
+    model: DEFAULT_MODEL,
+    streaming: true,
+    onPermissionRequest: approveAll,
+    systemMessage,
+    mcpServers: {
+      nanoclaw: {
+        type: 'local' as const,
+        command: 'node',
+        args: [mcpServerPath],
+        env: {
+          NANOCLAW_CHAT_JID: containerInput.chatJid,
+          NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+          NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+        },
+        tools: ['*'] as string[],
+      },
+    },
+    infiniteSessions: {
+      enabled: true,
+      backgroundCompactionThreshold: 0.80,
+      bufferExhaustionThreshold: 0.95,
+    },
+  };
+
+  if (containerInput.sessionId) {
+    log(`Resuming session: ${containerInput.sessionId}`);
+    return client.resumeSession({
+      sessionId: containerInput.sessionId,
+      ...sessionConfig,
+    });
+  }
+
+  log('Creating new session');
+  return client.createSession(sessionConfig);
+}
+
+/**
+ * Send a prompt and wait for the response.
+ * Polls for _close sentinel and IPC follow-up messages during execution.
+ */
+async function sendPrompt(
+  session: CopilotSession,
+  prompt: string,
+): Promise<{ result: string | null; aborted: boolean }> {
+  let aborted = false;
+
+  // Poll for _close sentinel and IPC follow-up messages during query
+  const ipcPoll = setInterval(() => {
     if (shouldClose()) {
-      log('Close sentinel detected during query, ending stream');
-      closedDuringQuery = true;
-      stream.end();
-      ipcPolling = false;
+      log('Close sentinel detected during query, aborting');
+      aborted = true;
+      session.abort();
+      clearInterval(ipcPoll);
       return;
     }
     const messages = drainIpcInput();
     for (const text of messages) {
-      log(`Piping IPC message into active query (${text.length} chars)`);
-      stream.push(text);
+      log(`Enqueuing IPC follow-up message (${text.length} chars)`);
+      session.send({ prompt: text, mode: 'enqueue' });
     }
-    setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
-  };
-  setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
+  }, IPC_POLL_MS);
 
-  let newSessionId: string | undefined;
-  let lastAssistantUuid: string | undefined;
-  let messageCount = 0;
-  let resultCount = 0;
-
-  // Load global CLAUDE.md as additional system context (shared across all groups)
-  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
-  let globalClaudeMd: string | undefined;
-  if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
-    globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
+  try {
+    const response = await session.sendAndWait({ prompt });
+    clearInterval(ipcPoll);
+    return { result: response?.data?.content || null, aborted };
+  } catch (err) {
+    clearInterval(ipcPoll);
+    if (aborted) return { result: null, aborted: true };
+    throw err;
   }
-
-  // Discover additional directories mounted at /workspace/extra/*
-  // These are passed to the SDK so their CLAUDE.md files are loaded automatically
-  const extraDirs: string[] = [];
-  const extraBase = '/workspace/extra';
-  if (fs.existsSync(extraBase)) {
-    for (const entry of fs.readdirSync(extraBase)) {
-      const fullPath = path.join(extraBase, entry);
-      if (fs.statSync(fullPath).isDirectory()) {
-        extraDirs.push(fullPath);
-      }
-    }
-  }
-  if (extraDirs.length > 0) {
-    log(`Additional directories: ${extraDirs.join(', ')}`);
-  }
-
-  for await (const message of query({
-    prompt: stream,
-    options: {
-      cwd: '/workspace/group',
-      additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
-      resume: sessionId,
-      resumeSessionAt: resumeAt,
-      systemPrompt: globalClaudeMd
-        ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
-        : undefined,
-      allowedTools: [
-        'Bash',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
-        'Task', 'TaskOutput', 'TaskStop',
-        'TeamCreate', 'TeamDelete', 'SendMessage',
-        'TodoWrite', 'ToolSearch', 'Skill',
-        'NotebookEdit',
-        'mcp__nanoclaw__*'
-      ],
-      env: sdkEnv,
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
-      settingSources: ['project', 'user'],
-      mcpServers: {
-        nanoclaw: {
-          command: 'node',
-          args: [mcpServerPath],
-          env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-          },
-        },
-      },
-      hooks: {
-        PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
-      },
-    }
-  })) {
-    messageCount++;
-    const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
-    log(`[msg #${messageCount}] type=${msgType}`);
-
-    if (message.type === 'assistant' && 'uuid' in message) {
-      lastAssistantUuid = (message as { uuid: string }).uuid;
-    }
-
-    if (message.type === 'system' && message.subtype === 'init') {
-      newSessionId = message.session_id;
-      log(`Session initialized: ${newSessionId}`);
-    }
-
-    if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
-      const tn = message as { task_id: string; status: string; summary: string };
-      log(`Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`);
-    }
-
-    if (message.type === 'result') {
-      resultCount++;
-      const textResult = 'result' in message ? (message as { result?: string }).result : null;
-      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
-      writeOutput({
-        status: 'success',
-        result: textResult || null,
-        newSessionId
-      });
-    }
-  }
-
-  ipcPolling = false;
-  log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
-  return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
 
 async function main(): Promise<void> {
@@ -481,14 +409,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.
-  // No real secrets exist in the container environment.
-  const sdkEnv: Record<string, string | undefined> = { ...process.env };
-
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
-  let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
   // Clean up stale _close sentinel from previous container runs
@@ -505,30 +428,50 @@ async function main(): Promise<void> {
     prompt += '\n' + pending.join('\n');
   }
 
-  // Query loop: run query → wait for IPC message → run new query → repeat
-  let resumeAt: string | undefined;
+  // Start Copilot SDK client
+  // Auth: picks up GITHUB_TOKEN from environment (injected by host credential proxy)
+  const client = new CopilotClient();
+  await client.start();
+
+  let session: CopilotSession;
+  try {
+    session = await createOrResumeSession(client, containerInput, mcpServerPath);
+  } catch (err) {
+    writeOutput({
+      status: 'error',
+      result: null,
+      error: `Failed to create session: ${err instanceof Error ? err.message : String(err)}`
+    });
+    await client.stop();
+    process.exit(1);
+  }
+
+  // Session ID for tracking — use the provided ID or the SDK-assigned one
+  const sessionId = containerInput.sessionId || (session as any).sessionId || 'unknown';
+  log(`Session ready: ${sessionId} (model: ${DEFAULT_MODEL})`);
+
+  // Archive conversation before context compaction
+  session.on('session.compaction_start', () => {
+    archiveConversation(session, containerInput);
+  });
+
+  // Query loop: send prompt → wait for response → wait for IPC message → repeat
   try {
     while (true) {
-      log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
+      log(`Sending prompt (${prompt.length} chars)...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
-      if (queryResult.newSessionId) {
-        sessionId = queryResult.newSessionId;
-      }
-      if (queryResult.lastAssistantUuid) {
-        resumeAt = queryResult.lastAssistantUuid;
-      }
+      const { result, aborted } = await sendPrompt(session, prompt);
 
-      // If _close was consumed during the query, exit immediately.
-      // Don't emit a session-update marker (it would reset the host's
-      // idle timer and cause a 30-min delay before the next _close).
-      if (queryResult.closedDuringQuery) {
-        log('Close sentinel consumed during query, exiting');
+      writeOutput({
+        status: 'success',
+        result,
+        newSessionId: sessionId,
+      });
+
+      if (aborted) {
+        log('Query aborted via close sentinel, exiting');
         break;
       }
-
-      // Emit session update so host can track it
-      writeOutput({ status: 'success', result: null, newSessionId: sessionId });
 
       log('Query ended, waiting for next IPC message...');
 
@@ -539,7 +482,7 @@ async function main(): Promise<void> {
         break;
       }
 
-      log(`Got new message (${nextMessage.length} chars), starting new query`);
+      log(`Got new message (${nextMessage.length} chars), continuing session`);
       prompt = nextMessage;
     }
   } catch (err) {
@@ -551,8 +494,11 @@ async function main(): Promise<void> {
       newSessionId: sessionId,
       error: errorMessage
     });
-    process.exit(1);
   }
+
+  // Cleanup: disconnect session (preserves state on disk) and stop client
+  await session.disconnect();
+  await client.stop();
 }
 
 main();
