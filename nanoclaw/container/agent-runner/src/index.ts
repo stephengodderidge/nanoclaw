@@ -75,9 +75,8 @@ function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
 }
 
-function getSessionSummary(sessionId: string, transcriptPath: string): string | null {
-  const projectDir = path.dirname(transcriptPath);
-  const indexPath = path.join(projectDir, 'sessions-index.json');
+function getSessionSummary(sessionId: string, groupDir: string): string | null {
+  const indexPath = path.join(groupDir, 'sessions-index.json');
 
   if (!fs.existsSync(indexPath)) {
     log(`Sessions index not found at ${indexPath}`);
