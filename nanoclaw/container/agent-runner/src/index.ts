@@ -51,6 +51,7 @@ const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
 const DEFAULT_MODEL = process.env.MODEL || 'claude-opus-4.6';
+const SEND_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 async function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -307,6 +308,7 @@ async function createOrResumeSession(
   const sessionConfig = {
     model: DEFAULT_MODEL,
     streaming: true,
+    workingDirectory: '/workspace/group',
     onPermissionRequest: approveAll,
     systemMessage,
     mcpServers: {
@@ -331,10 +333,7 @@ async function createOrResumeSession(
 
   if (containerInput.sessionId) {
     log(`Resuming session: ${containerInput.sessionId}`);
-    return client.resumeSession({
-      sessionId: containerInput.sessionId,
-      ...sessionConfig,
-    });
+    return client.resumeSession(containerInput.sessionId, sessionConfig);
   }
 
   log('Creating new session');
@@ -368,7 +367,7 @@ async function sendPrompt(
   }, IPC_POLL_MS);
 
   try {
-    const response = await session.sendAndWait({ prompt });
+    const response = await session.sendAndWait({ prompt }, SEND_TIMEOUT_MS);
     clearInterval(ipcPoll);
     return { result: response?.data?.content || null, aborted };
   } catch (err) {
