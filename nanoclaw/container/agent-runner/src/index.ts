@@ -119,7 +119,7 @@ function archiveConversation(session: CopilotSession, containerInput: ContainerI
       return;
     }
 
-    const sessionId = (session as any).sessionId || 'unknown';
+    const sessionId = session.sessionId;
     const summary = getSessionSummary(sessionId, '/workspace/group');
     const name = summary ? sanitizeFilename(summary) : generateFallbackName();
 
@@ -155,32 +155,6 @@ function generateFallbackName(): string {
 interface ParsedMessage {
   role: 'user' | 'assistant';
   content: string;
-}
-
-function parseTranscript(content: string): ParsedMessage[] {
-  const messages: ParsedMessage[] = [];
-
-  for (const line of content.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const entry = JSON.parse(line);
-      if (entry.type === 'user' && entry.message?.content) {
-        const text = typeof entry.message.content === 'string'
-          ? entry.message.content
-          : entry.message.content.map((c: { text?: string }) => c.text || '').join('');
-        if (text) messages.push({ role: 'user', content: text });
-      } else if (entry.type === 'assistant' && entry.message?.content) {
-        const textParts = entry.message.content
-          .filter((c: { type: string }) => c.type === 'text')
-          .map((c: { text: string }) => c.text);
-        const text = textParts.join('');
-        if (text) messages.push({ role: 'assistant', content: text });
-      }
-    } catch {
-    }
-  }
-
-  return messages;
 }
 
 function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | null, assistantName?: string): string {
@@ -279,26 +253,39 @@ function waitForIpcMessage(): Promise<string | null> {
 }
 
 /**
- * Build the system message from global CLAUDE.md and extra directory CLAUDE.md files.
- * For non-main groups, the global CLAUDE.md is appended to the default system prompt.
- * Extra directories' CLAUDE.md files are also included.
+ * Find the memory file in a directory: prefers AGENTS.md, falls back to CLAUDE.md.
+ */
+function findMemoryFile(dir: string): string | null {
+  const agentsMd = path.join(dir, 'AGENTS.md');
+  if (fs.existsSync(agentsMd)) return agentsMd;
+  const claudeMd = path.join(dir, 'CLAUDE.md');
+  if (fs.existsSync(claudeMd)) return claudeMd;
+  return null;
+}
+
+/**
+ * Build the system message from global and extra directory memory files.
+ * Group-level AGENTS.md is auto-loaded by the Copilot SDK via workspacePath,
+ * so we only inject global + extra memories here.
  */
 function buildSystemMessage(containerInput: ContainerInput): { content: string; mode: 'append' } | undefined {
   const parts: string[] = [];
 
-  // Global CLAUDE.md (shared across all groups, read-only for non-main)
-  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
-  if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
-    parts.push(fs.readFileSync(globalClaudeMdPath, 'utf-8'));
+  // Global memory (shared across all groups, read-only for non-main)
+  if (!containerInput.isMain) {
+    const globalFile = findMemoryFile('/workspace/global');
+    if (globalFile) {
+      parts.push(fs.readFileSync(globalFile, 'utf-8'));
+    }
   }
 
-  // Extra directories' CLAUDE.md files
+  // Extra directories' memory files
   const extraBase = '/workspace/extra';
   if (fs.existsSync(extraBase)) {
     for (const entry of fs.readdirSync(extraBase)) {
-      const claudeMdPath = path.join(extraBase, entry, 'CLAUDE.md');
-      if (fs.existsSync(claudeMdPath)) {
-        parts.push(fs.readFileSync(claudeMdPath, 'utf-8'));
+      const memFile = findMemoryFile(path.join(extraBase, entry));
+      if (memFile) {
+        parts.push(fs.readFileSync(memFile, 'utf-8'));
       }
     }
   }
@@ -446,7 +433,7 @@ async function main(): Promise<void> {
   }
 
   // Session ID for tracking — use the provided ID or the SDK-assigned one
-  const sessionId = containerInput.sessionId || (session as any).sessionId || 'unknown';
+  const sessionId = containerInput.sessionId || session.sessionId;
   log(`Session ready: ${sessionId} (model: ${DEFAULT_MODEL})`);
 
   // Archive conversation before context compaction
