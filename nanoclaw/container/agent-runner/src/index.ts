@@ -51,6 +51,13 @@ const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
 const DEFAULT_MODEL = process.env.MODEL || 'claude-opus-4.6';
+const COPILOT_PROXY_URL = process.env.COPILOT_PROXY_URL; // e.g., http://host-gateway:3001/v1
+
+if (!COPILOT_PROXY_URL) {
+  console.error('[agent-runner] COPILOT_PROXY_URL not set. Container must receive this from the host.');
+  process.exit(1);
+}
+
 const SEND_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 async function readStdin(): Promise<string> {
@@ -311,6 +318,12 @@ async function createOrResumeSession(
     workingDirectory: '/workspace/group',
     onPermissionRequest: approveAll,
     systemMessage,
+    // BYOK: route LLM requests through the host credential proxy.
+    // Type "openai" because api.githubcopilot.com speaks OpenAI chat/completions format.
+    provider: {
+      type: 'openai' as const,
+      baseUrl: COPILOT_PROXY_URL,
+    },
     mcpServers: {
       nanoclaw: {
         type: 'local' as const,
@@ -413,8 +426,8 @@ async function main(): Promise<void> {
     prompt += '\n' + pending.join('\n');
   }
 
-  // Start Copilot SDK client
-  // Auth: picks up GITHUB_TOKEN from environment (injected by host credential proxy)
+  // Start Copilot SDK client — no auth needed in container.
+  // LLM requests go through BYOK provider → host proxy → api.githubcopilot.com
   const client = new CopilotClient();
   await client.start();
 
