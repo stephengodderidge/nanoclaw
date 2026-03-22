@@ -101,10 +101,10 @@ The auth strategy is decided: **BYOK mode + Copilot Auth Proxy on host**. This p
 - Copilot backend is natively OpenAI-compatible (source-verified via OSS projects)
 - Uses Copilot Enterprise billing (premium requests)
 
-**Spike status:** In progress. Token exchange requires a **fine-grained PAT with "Copilot" permission** (classic `ghp_` PATs return 404). Need to verify end-to-end with proper PAT.
+**Spike status:** ✅ Complete (2026-03-22). Verified: `api.githubcopilot.com` accepts PATs directly (no token exchange needed), zero-scope fine-grained PATs work, 44 models available, streaming works. See `docs/notes/stream-3-auth-spike.md` for details.
 
 #### Tasks:
-- **3.1** ⏳ Spike: Verify token exchange + chat/completions + billing with fine-grained PAT
+- **3.1** ✅ Spike: Verified — api.githubcopilot.com accepts PATs directly, zero-scope works, no token exchange needed
 - **3.2** Rewrite `src/credential-proxy.ts` → `src/copilot-auth-proxy.ts`:
   - Token exchange: PAT → Copilot API token via `GET api.github.com/copilot_internal/v2/token`
   - Cache + auto-refresh (~1hr token lifetime)
