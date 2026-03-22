@@ -89,23 +89,37 @@ The migration is **primarily scoped to the container agent runner** — the host
 **Dependencies:** None (can start immediately)  
 **Scope:** Replace Anthropic auth with GitHub token auth
 
+#### ✅ Decision Made: BYOK + Copilot Auth Proxy
+
+**See `INVESTIGATION-AUTH.md` (Approach 7) for full details.**
+
+The auth strategy is decided: **BYOK mode + Copilot Auth Proxy on host**. This preserves nanoclaw's credential isolation model with zero tokens in the container.
+
+**Architecture:**
+- Container uses BYOK mode: `provider: { type: "openai", baseUrl: "http://host:3001/v1" }` — NO tokens
+- Host proxy (`src/copilot-auth-proxy.ts`): exchanges PAT → short-lived Copilot API token, injects auth headers, forwards body verbatim to `api.githubcopilot.com/chat/completions`
+- Copilot backend is natively OpenAI-compatible (source-verified via OSS projects)
+- Uses Copilot Enterprise billing (premium requests)
+
+**Spike status:** In progress. Token exchange requires a **fine-grained PAT with "Copilot" permission** (classic `ghp_` PATs return 404). Need to verify end-to-end with proper PAT.
+
 #### Tasks:
-- **3.1** Update credential proxy (`src/credential-proxy.ts`):
-  - Current: Intercepts requests to Anthropic API, injects `ANTHROPIC_API_KEY` or OAuth token
-  - Target: Inject `GITHUB_TOKEN` for Copilot API auth
-  - Evaluate: Copilot SDK may handle auth internally (via `githubToken` option on `CopilotClient`) — credential proxy may become simpler or unnecessary
-- **3.2** Update environment variables:
-  - `.env.example`: Replace `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` with `GITHUB_TOKEN`
-  - `src/env.ts`: Update secret parsing for new variable names
-  - `src/config.ts`: Update any Anthropic-specific config references
-- **3.3** Update container environment injection:
-  - `src/container-runner.ts`: Change env vars passed to container
-  - Remove `ANTHROPIC_BASE_URL` proxy injection
-  - Add `GITHUB_TOKEN` or `COPILOT_GITHUB_TOKEN` injection (or determine if proxy pattern still needed)
-- **3.4** Determine auth strategy:
-  - Option A: Pass `GITHUB_TOKEN` directly to container (simpler, but token exposed in container)
-  - Option B: Keep credential proxy pattern (more secure, token never in container)
-  - Recommendation: Keep proxy pattern for security parity with current design
+- **3.1** ⏳ Spike: Verify token exchange + chat/completions + billing with fine-grained PAT
+- **3.2** Rewrite `src/credential-proxy.ts` → `src/copilot-auth-proxy.ts`:
+  - Token exchange: PAT → Copilot API token via `GET api.github.com/copilot_internal/v2/token`
+  - Cache + auto-refresh (~1hr token lifetime)
+  - HTTP proxy: inject `Authorization: Bearer <copilot-token>` + Copilot headers
+  - Forward verbatim to `api.githubcopilot.com` (HTTPS)
+- **3.3** Update agent runner (`container/agent-runner/src/index.ts`):
+  - Add BYOK `provider` config to session creation
+  - Remove `GITHUB_TOKEN` dependency — container needs no auth
+- **3.4** Update container runner (`src/container-runner.ts`):
+  - Remove Anthropic env vars (`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`)
+  - Add `COPILOT_PROXY_URL=http://<host-gateway>:<port>/v1`
+  - Inject no tokens
+- **3.5** Update environment config:
+  - `.env.example`: Replace Anthropic vars with `GITHUB_TOKEN` (fine-grained PAT with Copilot permission)
+  - `src/env.ts`, `src/config.ts`: Parse `GITHUB_TOKEN`
 
 ---
 
@@ -290,7 +304,7 @@ Stream 9 (Documentation) ─[depends]─ALL STREAMS
 
 | # | Decision | Options | Recommendation | **Decision** |
 |---|----------|---------|----------------|-------------|
-| 1 | **Auth strategy** | Proxy pattern (secure) vs direct token injection (simpler) | Keep proxy pattern | ✅ **Keep proxy pattern** — security parity with current design |
+| 1 | **Auth strategy** | Proxy pattern (secure) vs direct token injection (simpler) | Keep proxy pattern | ✅ **BYOK + Copilot Auth Proxy** — zero tokens in container, same pattern as Anthropic. See INVESTIGATION-AUTH.md Approach 7. |
 | 2 | **Default model** | claude-opus-4.6, claude-sonnet-4.5, gpt-5, configurable | Configurable via env var | ✅ **Configurable via `MODEL` env var, default `claude-opus-4.6`** |
 | 3 | **Agent teams replacement** | Use customAgents, full multi-session IPC, drop entirely | Use customAgents | ✅ **Use `customAgents` for delegation, drop inter-agent messaging for now** |
 | 4 | **Copilot CLI in container** | Global install vs bundle with agent runner | Global install in Dockerfile | ✅ **Global install in Dockerfile** — matches current `claude-code` pattern |

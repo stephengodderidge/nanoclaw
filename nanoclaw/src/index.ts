@@ -477,7 +477,7 @@ async function main(): Promise<void> {
   loadState();
   restoreRemoteControl();
 
-  // Start credential proxy (containers route API calls through this)
+  // Start Copilot auth proxy (containers route LLM requests through this)
   const proxyServer = await startCredentialProxy(
     CREDENTIAL_PROXY_PORT,
     PROXY_BIND_HOST,
