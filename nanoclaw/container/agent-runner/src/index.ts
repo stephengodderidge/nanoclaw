@@ -318,8 +318,15 @@ async function createOrResumeSession(
     workingDirectory: '/workspace/group',
     onPermissionRequest: approveAll,
     systemMessage,
-    // BYOK: route LLM requests through the host credential proxy.
-    // Type "openai" because api.githubcopilot.com speaks OpenAI chat/completions format.
+    // Skills from .github/skills/ in the working directory.
+    // Copilot CLI  auto-discovers .github/skills/ path, but being explicit ensures
+    // skills load even if CLI conventions change.
+    // TODO: validate without specifying skillDirectories, remove below if works as is.
+    // skillDirectories: ['/workspace/group/.github/skills'],
+    
+    // route LLM requests through the host credential proxy.
+    // "openai" is the type b/c api.githubcopilot.com 
+    // follows the OpenAI chat/completions format.
     provider: {
       type: 'openai' as const,
       baseUrl: COPILOT_PROXY_URL,
@@ -428,7 +435,9 @@ async function main(): Promise<void> {
 
   // Start Copilot SDK client — no auth needed in container.
   // LLM requests go through BYOK provider → host proxy → api.githubcopilot.com
-  const client = new CopilotClient();
+  // useLoggedInUser: false prevents Github copilot CLI from looking for 
+  // tokens or gh CLI auth inside the container (tokens are on the host, not the container)
+  const client = new CopilotClient({ useLoggedInUser: false });
   await client.start();
 
   let session: CopilotSession;
