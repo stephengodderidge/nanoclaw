@@ -213,7 +213,7 @@ describe('parameterized SQL registration', () => {
 });
 
 describe('file templating', () => {
-  it('replaces assistant name in CLAUDE.md content', () => {
+  it('replaces assistant name in AGENTS.md content', () => {
     let content = '# Andy\n\nYou are Andy, a personal assistant.';
 
     content = content.replace(/^# Andy$/m, '# Nova');
