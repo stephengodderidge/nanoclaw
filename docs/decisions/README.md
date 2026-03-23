@@ -18,3 +18,4 @@ Each ADR follows this template:
 |---|-------|--------|------|
 | 001 | [Migrate to Copilot SDK](001-copilot-sdk-migration.md) | Accepted | 2026-03-20 |
 | 002 | [Auth: BYOK + Copilot Auth Proxy](002-auth-byok-proxy.md) | Accepted | 2026-03-21 |
+| 003 | [Remove Remote Control Feature](003-remove-remote-control.md) | Accepted | 2026-03-23 |

@@ -14,3 +14,4 @@ This directory contains in-progress working notes for active tasks. Agents shoul
 |------|-------------|--------|
 | [stream-3-auth-spike.md](stream-3-auth-spike.md) | Stream 3: Auth | ✅ Complete |
 | [stream-6-skills-migration.md](stream-6-skills-migration.md) | Stream 6: Skills | 🟡 In Progress |
+| [remote-control-future.md](remote-control-future.md) | Remote Control | 📋 Reference |
