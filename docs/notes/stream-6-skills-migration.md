@@ -1,8 +1,8 @@
 # Working Note: Skills, State & Memory Migration (.claude → Copilot)
 
-**Status:** 🟡 In Progress — revised approach, implementing  
+**Status:** ✅ Complete — merged  
 **Last Updated:** 2026-03-23  
-**Branch:** `s6/skills-auto-discovery`
+**Branch:** `s6/skills-auto-discovery` (merged to main)
 
 ### Status History
 | Date | Status | Detail |

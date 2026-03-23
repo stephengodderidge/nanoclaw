@@ -228,27 +228,32 @@ The auth strategy is decided: **BYOK mode + Copilot Auth Proxy on host**. This p
 **Dependencies:** All other streams  
 **Scope:** Verify migration works end-to-end
 
+**Pre-condition:** All 220 host-side unit tests currently pass. The test changes below are incremental.
+
 #### Tasks:
 - **8.1** Update unit tests:
-  - `container-runner.test.ts` — update expected env vars, container args
-  - `credential-proxy.test.ts` — update for GitHub token auth
-  - `ipc-auth.test.ts` — update if auth format changes
-  - All other tests should pass unchanged (SDK-agnostic)
-- **8.2** Integration testing:
+  - `container-runner.test.ts` — verify expected mounts (`.copilot/` not `.claude/`, `.github/skills/`), env vars (`COPILOT_PROXY_URL`)
+  - `credential-proxy.test.ts` — already migrated to GitHub token auth ✅
+  - `ipc-auth.test.ts` — verify no changes needed ✅
+  - `setup/environment.test.ts` — already updated for `GITHUB_TOKEN` ✅
+  - Remote control tests removed with feature ✅
+- **8.2** Integration testing (requires running container):
+  - Build container image: `docker build -t nanoclaw-agent:latest container/`
   - Test full message flow: receive message → spawn container → agent processes → send response
-  - Test session resumption across container restarts
+  - Test session resumption across container restarts (verify `~/.copilot/session-state/` persistence)
   - Test scheduled task execution
   - Test IPC communication (follow-up messages, task scheduling)
+  - Test MCP tools: `send_message`, `schedule_task`, `list_tasks`, etc.
 - **8.3** Tool verification:
-  - Test all built-in tools (file ops, bash, web search)
-  - Test MCP server tools (send_message, schedule_task, etc.)
-  - Test agent-browser integration
+  - Test built-in Copilot SDK tools (file ops, bash, web search)
+  - Test agent-browser skill auto-discovery via `.github/skills/`
+  - Test `skillDirectories` config loads skills correctly
 - **8.4** Performance validation:
-  - Compare response latency (Copilot SDK adds JSON-RPC layer)
-  - Monitor token usage for $150/month budget
-  - Test container startup time with new image
+  - Monitor Copilot API token usage against $150/month budget
+  - Test container startup time with new image (Copilot CLI adds ~200MB)
 - **8.5** Security validation:
-  - Verify credential proxy blocks token exposure
+  - Verify BYOK auth proxy works (`COPILOT_PROXY_URL` → host proxy → `api.githubcopilot.com`)
+  - Verify `useLoggedInUser: false` prevents auth lookups in container
   - Verify mount isolation still works
   - Verify IPC namespace isolation
 
@@ -260,14 +265,17 @@ The auth strategy is decided: **BYOK mode + Copilot Auth Proxy on host**. This p
 **Scope:** Update all documentation
 
 #### Tasks:
-- **9.1** Update `AGENTS.md` with implementation status
+- **9.1** Update `AGENTS.md` with implementation status and new architecture
 - **9.2** Create `docs/COPILOT_SDK_DEEP_DIVE.md` (parallel to existing `SDK_DEEP_DIVE.md`)
-- **9.3** Update `README.md` references (Claude → Copilot)
-- **9.4** Update `CLAUDE.md` files (global + main) for new agent context
-- **9.5** Update `.env.example` with new variables
+- **9.3** Update `README.md` references (Claude → Copilot, setup instructions, architecture diagram)
+- **9.4** Rename `CLAUDE.md` files → `AGENTS.md` in `groups/global/` and `groups/main/`
+  - Update content to reference Copilot SDK instead of Claude
+  - Agent runner already prefers AGENTS.md with CLAUDE.md fallback
+- **9.5** `.env.example` — already updated ✅
 - **9.6** Update `CONTRIBUTING.md` if contribution workflow changes
 - **9.7** Update `future-AGENTS.md` to reflect completed migration
 - **9.8** Remove or archive Claude SDK deep dive docs
+- **9.9** Clean up commented-out settings.json code in `container-runner.ts` (marked with TODO)
 
 ---
 
