@@ -65,7 +65,7 @@ function buildVolumeMounts(
 
   if (isMain) {
     // Main gets the project root read-only. Writable paths the agent needs
-    // (group folder, IPC, .claude/) are mounted separately below.
+    // (group folder, IPC, .copilot/) are mounted separately below.
     // Read-only prevents the agent from modifying host application code
     // (src/, dist/, package.json, etc.) which would bypass the sandbox
     // entirely on next restart.
@@ -112,55 +112,38 @@ function buildVolumeMounts(
     }
   }
 
-  // Per-group Claude sessions directory (isolated from other groups)
-  // Each group gets their own .claude/ to prevent cross-group session access
+  // Per-group Copilot session state directory (isolated from other groups).
+  // Each group gets their own .copilot/ to prevent cross-group session access
+  // Required for session resumption to work across container restarts 
+  // (resumeSession reads from session-state/).
   const groupSessionsDir = path.join(
     DATA_DIR,
     'sessions',
     group.folder,
-    '.claude',
+    '.copilot',
   );
   fs.mkdirSync(groupSessionsDir, { recursive: true });
-  const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  if (!fs.existsSync(settingsFile)) {
-    fs.writeFileSync(
-      settingsFile,
-      JSON.stringify(
-        {
-          env: {
-            // Enable agent swarms (subagent orchestration)
-            // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
-            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-            // Load CLAUDE.md from additional mounted directories
-            // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
-            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-            // Enable Claude's memory feature (persists user preferences between sessions)
-            // https://code.claude.com/docs/en/memory#manage-auto-memory
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
-          },
-        },
-        null,
-        2,
-      ) + '\n',
-    );
-  }
 
-  // Sync skills from container/skills/ into each group's .claude/skills/
+  mounts.push({
+    hostPath: groupSessionsDir,
+    containerPath: '/home/node/.copilot',
+    readonly: false,
+  });
+
+  // Copy skills into the group's .github/skills/ directory.
+  // Copilot CLI auto-discovers SKILL.md files from .github/skills/<name>/
+  // in the working directory (project-level convention). Skills land inside
+  // the existing /workspace/group mount — no extra mount needed.
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
-  const skillsDst = path.join(groupSessionsDir, 'skills');
+  const skillsDst = path.join(groupDir, '.github', 'skills');
   if (fs.existsSync(skillsSrc)) {
+    fs.mkdirSync(skillsDst, { recursive: true });
     for (const skillDir of fs.readdirSync(skillsSrc)) {
       const srcDir = path.join(skillsSrc, skillDir);
       if (!fs.statSync(srcDir).isDirectory()) continue;
-      const dstDir = path.join(skillsDst, skillDir);
-      fs.cpSync(srcDir, dstDir, { recursive: true });
+      fs.cpSync(srcDir, path.join(skillsDst, skillDir), { recursive: true });
     }
   }
-  mounts.push({
-    hostPath: groupSessionsDir,
-    containerPath: '/home/node/.claude',
-    readonly: false,
-  });
 
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
