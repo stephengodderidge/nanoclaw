@@ -37,10 +37,11 @@ The migration is **primarily scoped to the container agent runner** — the host
 
 ## Work Streams (Parallelizable)
 
-### Stream 1: Agent Runner Core Migration
+### Stream 1: Agent Runner Core Migration ✅
 **Owner:** Agent team A  
 **Dependencies:** None (can start immediately)  
-**Scope:** Rewrite `container/agent-runner/src/index.ts` to use Copilot SDK
+**Scope:** Rewrite `container/agent-runner/src/index.ts` to use Copilot SDK  
+**Status:** Complete
 
 #### Tasks:
 - **1.1** Replace `@anthropic-ai/claude-agent-sdk` with `@github/copilot-sdk` in `container/agent-runner/package.json`
@@ -64,10 +65,11 @@ The migration is **primarily scoped to the container agent runner** — the host
 
 ---
 
-### Stream 2: MCP Server Migration
+### Stream 2: MCP Server Migration ✅
 **Owner:** Agent team B  
 **Dependencies:** None (can start immediately)  
-**Scope:** Adapt nanoclaw MCP server for Copilot SDK's native MCP support
+**Scope:** Adapt nanoclaw MCP server for Copilot SDK's native MCP support  
+**Status:** Complete — MCP server (`ipc-mcp-stdio.ts`) is protocol-standard and SDK-agnostic. Registration moved from Claude SDK API to Copilot SDK's `mcpServers` session config in Stream 1. All 8 tools unchanged. No file changes needed.
 
 #### Tasks:
 - **2.1** Refactor `container/agent-runner/src/ipc-mcp-stdio.ts`:
@@ -84,10 +86,11 @@ The migration is **primarily scoped to the container agent runner** — the host
 
 ---
 
-### Stream 3: Authentication & Credential System
+### Stream 3: Authentication & Credential System ✅
 **Owner:** Agent team C  
 **Dependencies:** None (can start immediately)  
-**Scope:** Replace Anthropic auth with GitHub token auth
+**Scope:** Replace Anthropic auth with GitHub token auth  
+**Status:** Complete — merged in PR #5
 
 #### ✅ Decision Made: BYOK + Copilot Auth Proxy
 
@@ -123,10 +126,11 @@ The auth strategy is decided: **BYOK mode + Copilot Auth Proxy on host**. This p
 
 ---
 
-### Stream 4: Container Image (Dockerfile)
+### Stream 4: Container Image (Dockerfile) ✅
 **Owner:** Agent team D  
 **Dependencies:** Stream 1 (package.json changes)  
-**Scope:** Update container image for Copilot SDK runtime
+**Scope:** Update container image for Copilot SDK runtime  
+**Status:** Complete — merged in PR #6
 
 #### Tasks:
 - **4.1** Update `container/Dockerfile`:
@@ -147,10 +151,11 @@ The auth strategy is decided: **BYOK mode + Copilot Auth Proxy on host**. This p
 
 ---
 
-### Stream 5: Memory System Adaptation
+### Stream 5: Memory System Adaptation ✅
 **Owner:** Agent team E  
 **Dependencies:** Stream 1 (session creation API)  
-**Scope:** Replace CLAUDE.md auto-loading with Copilot SDK system message
+**Scope:** Replace CLAUDE.md auto-loading with Copilot SDK system message  
+**Status:** Complete — `buildSystemMessage()` implemented in Stream 1. Loads AGENTS.md/CLAUDE.md from global + extras, injects via `systemMessage: { mode: 'append' }`. Memory files mounted read-write so agent writes persist.
 
 #### Tasks:
 - **5.1** Implement memory loading in agent runner:
@@ -167,10 +172,11 @@ The auth strategy is decided: **BYOK mode + Copilot Auth Proxy on host**. This p
 
 ---
 
-### Stream 6: Tool Configuration
+### Stream 6: Tool Configuration ✅ (partial — skills done, subagents deferred)
 **Owner:** Agent team F  
 **Dependencies:** Stream 1 (session creation API)  
-**Scope:** Map Claude SDK tools to Copilot SDK equivalents
+**Scope:** Map Claude SDK tools to Copilot SDK equivalents  
+**Status:** Skills migration complete (merged in PR #6). Built-in tools handled by Copilot SDK natively. `onPermissionRequest: approveAll` set. Subagent tools (6.4) deferred — see Decision #3 in plan (customAgents pattern).
 
 #### Tasks:
 - **6.1** Map built-in tools:
@@ -192,10 +198,11 @@ The auth strategy is decided: **BYOK mode + Copilot Auth Proxy on host**. This p
 
 ---
 
-### Stream 7: Host-Side Orchestrator Updates
+### Stream 7: Host-Side Orchestrator Updates ✅
 **Owner:** Agent team G  
 **Dependencies:** Streams 3, 4 (auth + container image)  
-**Scope:** Update host-side code for new SDK
+**Scope:** Update host-side code for new SDK  
+**Status:** Complete — merged in PR #7. Removed remote control feature (ADR 003), updated credential checks to GITHUB_TOKEN, updated register.ts for AGENTS.md, cleaned up branding.
 
 #### Tasks:
 - **7.1** Update `src/container-runner.ts`:
