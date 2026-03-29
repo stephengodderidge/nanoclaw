@@ -58,6 +58,10 @@ if (!COPILOT_PROXY_URL) {
   process.exit(1);
 }
 
+// After the guard above, COPILOT_PROXY_URL is guaranteed to be a string.
+// TypeScript can't narrow module-level variables from control flow, so we re-bind.
+const proxyBaseUrl: string = COPILOT_PROXY_URL;
+
 const SEND_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 async function readStdin(): Promise<string> {
@@ -109,9 +113,9 @@ function getSessionSummary(sessionId: string, groupDir: string): string | null {
  * Called when the Copilot SDK fires session.compaction_start.
  * Uses session.getMessages() instead of Claude SDK's transcript file.
  */
-function archiveConversation(session: CopilotSession, containerInput: ContainerInput): void {
+async function archiveConversation(session: CopilotSession, containerInput: ContainerInput): Promise<void> {
   try {
-    const events = session.getMessages();
+    const events = await session.getMessages();
     const messages: ParsedMessage[] = [];
 
     for (const event of events) {
@@ -329,7 +333,7 @@ async function createOrResumeSession(
     // follows the OpenAI chat/completions format.
     provider: {
       type: 'openai' as const,
-      baseUrl: COPILOT_PROXY_URL,
+      baseUrl: proxyBaseUrl,
     },
     mcpServers: {
       nanoclaw: {
