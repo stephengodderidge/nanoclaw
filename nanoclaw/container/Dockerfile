@@ -40,8 +40,8 @@ WORKDIR /app
 # Copy package files first for better caching
 COPY agent-runner/package*.json ./
 
-# Install dependencies
-RUN npm install
+# Install dependencies (ci uses lockfile for reproducible builds)
+RUN npm ci
 
 # Copy source code
 COPY agent-runner/ ./
